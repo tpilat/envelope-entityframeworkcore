@@ -7,6 +7,8 @@ using Envelope.Model.Synchronyzation;
 using Envelope.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using System.Collections.Concurrent;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 
 namespace Envelope.EntityFrameworkCore;
@@ -15,6 +17,7 @@ public abstract class AuditableDbContext<TAuditEntry> : DbContextBase, IAuditabl
 	where TAuditEntry : class, IAuditEntry, new()
 {
 	private const string _ignored = "---IGNORED---";
+	private static ConcurrentDictionary<Type, List<string>?> _ignoredAuditProperitesDict = new();
 
 	public DbSet<TAuditEntry> AuditEntry { get; set; }
 
@@ -136,6 +139,29 @@ public abstract class AuditableDbContext<TAuditEntry> : DbContextBase, IAuditabl
 		return result;
 	}
 
+	private static List<string>? GetIgnoredAuditPropeties(object entity)
+	{
+		if (entity == null)
+			return null;
+
+		var type = entity.GetType();
+
+		var result = _ignoredAuditProperitesDict.GetOrAdd(type, t =>
+		{
+			try
+			{
+				var method = t.GetMethod("GetIgnoredAuditProperties", BindingFlags.Public | BindingFlags.Instance);
+				if (method != null)
+					return method.Invoke(entity, null) as List<string>;
+			}
+			catch { }
+
+			return null;
+		});
+
+		return result;
+	}
+
 	private List<AuditEntryInternal> OnBeforeSaveChanges(Guid auditCorrelationId, SaveOptions? options)
 	{
 		ChangeTracker.DetectChanges();
@@ -245,6 +271,8 @@ public abstract class AuditableDbContext<TAuditEntry> : DbContextBase, IAuditabl
 				IdCommandQuery = this.IdCommandQuery
 			};
 
+			var ignoredAuditProperties = GetIgnoredAuditPropeties(entry.Entity) ?? new List<string>();
+
 			auditEntries.Add(auditEntry);
 			foreach (var property in entry.Properties)
 			{
@@ -254,12 +282,12 @@ public abstract class AuditableDbContext<TAuditEntry> : DbContextBase, IAuditabl
 					continue;
 				}
 
-				var isIgnored = property.CurrentValue is byte[] || property.OriginalValue is byte[];
-
 				string propertyName = property.Metadata.Name;
+				var isIgnored = ignoredAuditProperties.Contains(propertyName);
+
 				if (property.Metadata.IsPrimaryKey())
 				{
-					auditEntry.KeyValues[propertyName] = isIgnored ? _ignored : property.CurrentValue;
+					auditEntry.KeyValues[propertyName] = GetValue(property.CurrentValue, isIgnored);
 					continue;
 				}
 
@@ -269,12 +297,12 @@ public abstract class AuditableDbContext<TAuditEntry> : DbContextBase, IAuditabl
 				{
 					case EntityState.Added:
 						auditEntry.DbOperation = DbOperation.Insert;
-						auditEntry.NewValues[propertyName] = isIgnored ? _ignored : property.CurrentValue;
+						auditEntry.NewValues[propertyName] = GetValue(property.CurrentValue, isIgnored);
 						break;
 
 					case EntityState.Deleted:
 						auditEntry.DbOperation = DbOperation.Delete;
-						auditEntry.OldValues[propertyName] = isIgnored ? _ignored : property.OriginalValue;
+						auditEntry.OldValues[propertyName] = GetValue(property.OriginalValue, isIgnored);
 						break;
 
 					case EntityState.Modified:
@@ -282,8 +310,8 @@ public abstract class AuditableDbContext<TAuditEntry> : DbContextBase, IAuditabl
 						{
 							auditEntry.ChangedColumns.Add(propertyName);
 							auditEntry.DbOperation = DbOperation.Update;
-							auditEntry.OldValues[propertyName] = isIgnored ? _ignored : property.OriginalValue;
-							auditEntry.NewValues[propertyName] = isIgnored ? _ignored : property.CurrentValue;
+							auditEntry.OldValues[propertyName] = GetValue(property.OriginalValue, isIgnored);
+							auditEntry.NewValues[propertyName] = GetValue(property.CurrentValue, isIgnored);
 						}
 						break;
 				}
@@ -299,21 +327,32 @@ public abstract class AuditableDbContext<TAuditEntry> : DbContextBase, IAuditabl
 		return auditEntries.Where(ae => ae.HasTemporaryProperties).ToList();
 	}
 
+	private object? GetValue(object? value, bool isIgnored)
+	{
+		if (value == null)
+			return value;
+
+		return isIgnored ? _ignored : value;
+	}
+
 	private void OnAfterSaveChanges(Guid auditCorrelationId, List<AuditEntryInternal> auditEntriesWithTempProperty)
 	{
 		foreach (var auditEntry in auditEntriesWithTempProperty)
 		{
+			var ignoredAuditProperties = GetIgnoredAuditPropeties(auditEntry.Entry.Entity) ?? new List<string>();
+
 			foreach (var prop in auditEntry.TemporaryProperties)
 			{
-				var isIgnored = prop.CurrentValue is byte[] || prop.OriginalValue is byte[];
+				string propertyName = prop.Metadata.Name;
+				var isIgnored = ignoredAuditProperties.Contains(propertyName);
 
 				if (prop.Metadata.IsPrimaryKey())
 				{
-					auditEntry.KeyValues[prop.Metadata.Name] = isIgnored ? _ignored : prop.CurrentValue;
+					auditEntry.KeyValues[propertyName] = GetValue(prop.CurrentValue, isIgnored);
 				}
 				else
 				{
-					auditEntry.NewValues[prop.Metadata.Name] = isIgnored ? _ignored : prop.CurrentValue;
+					auditEntry.NewValues[propertyName] = GetValue(prop.CurrentValue, isIgnored);
 				}
 			}
 
