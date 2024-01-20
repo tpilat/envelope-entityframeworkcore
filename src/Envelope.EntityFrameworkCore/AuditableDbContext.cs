@@ -14,6 +14,8 @@ namespace Envelope.EntityFrameworkCore;
 public abstract class AuditableDbContext<TAuditEntry> : DbContextBase, IAuditableDbContext<TAuditEntry>, IDbContext, IDisposable, IAsyncDisposable
 	where TAuditEntry : class, IAuditEntry, new()
 {
+	private const string _ignored = "---IGNORED---";
+
 	public DbSet<TAuditEntry> AuditEntry { get; set; }
 
 #pragma warning disable CS8618 // Non-nullable field must contain a non-null value when exiting constructor. Consider declaring as nullable.
@@ -252,10 +254,12 @@ public abstract class AuditableDbContext<TAuditEntry> : DbContextBase, IAuditabl
 					continue;
 				}
 
+				var isIgnored = property.CurrentValue is byte[] || property.OriginalValue is byte[];
+
 				string propertyName = property.Metadata.Name;
 				if (property.Metadata.IsPrimaryKey())
 				{
-					auditEntry.KeyValues[propertyName] = property.CurrentValue;
+					auditEntry.KeyValues[propertyName] = isIgnored ? _ignored : property.CurrentValue;
 					continue;
 				}
 
@@ -265,12 +269,12 @@ public abstract class AuditableDbContext<TAuditEntry> : DbContextBase, IAuditabl
 				{
 					case EntityState.Added:
 						auditEntry.DbOperation = DbOperation.Insert;
-						auditEntry.NewValues[propertyName] = property.CurrentValue;
+						auditEntry.NewValues[propertyName] = isIgnored ? _ignored : property.CurrentValue;
 						break;
 
 					case EntityState.Deleted:
 						auditEntry.DbOperation = DbOperation.Delete;
-						auditEntry.OldValues[propertyName] = property.OriginalValue;
+						auditEntry.OldValues[propertyName] = isIgnored ? _ignored : property.OriginalValue;
 						break;
 
 					case EntityState.Modified:
@@ -278,8 +282,8 @@ public abstract class AuditableDbContext<TAuditEntry> : DbContextBase, IAuditabl
 						{
 							auditEntry.ChangedColumns.Add(propertyName);
 							auditEntry.DbOperation = DbOperation.Update;
-							auditEntry.OldValues[propertyName] = property.OriginalValue;
-							auditEntry.NewValues[propertyName] = property.CurrentValue;
+							auditEntry.OldValues[propertyName] = isIgnored ? _ignored : property.OriginalValue;
+							auditEntry.NewValues[propertyName] = isIgnored ? _ignored : property.CurrentValue;
 						}
 						break;
 				}
@@ -301,13 +305,15 @@ public abstract class AuditableDbContext<TAuditEntry> : DbContextBase, IAuditabl
 		{
 			foreach (var prop in auditEntry.TemporaryProperties)
 			{
+				var isIgnored = prop.CurrentValue is byte[] || prop.OriginalValue is byte[];
+
 				if (prop.Metadata.IsPrimaryKey())
 				{
-					auditEntry.KeyValues[prop.Metadata.Name] = prop.CurrentValue;
+					auditEntry.KeyValues[prop.Metadata.Name] = isIgnored ? _ignored : prop.CurrentValue;
 				}
 				else
 				{
-					auditEntry.NewValues[prop.Metadata.Name] = prop.CurrentValue;
+					auditEntry.NewValues[prop.Metadata.Name] = isIgnored ? _ignored : prop.CurrentValue;
 				}
 			}
 
